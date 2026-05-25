@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>C1S3Upload</string>
+
+  <key>CFBundleIdentifier</key>
+  <string>se.peterwestrup.c1s3upload</string>
+
+  <key>CFBundleName</key>
+  <string>C1S3Upload</string>
+
+  <key>CFBundleDisplayName</key>
+  <string>C1S3Upload</string>
+
+  <key>CFBundleVersion</key>
+  <string>1.0.0</string>
+
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+
+  <key>CFBundleSignature</key>
+  <string>????</string>
+
+  <!-- Acceptera filer via "Open With" (Capture One skickar dem hit) -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>jpg</string>
+        <string>jpeg</string>
+        <string>tif</string>
+        <string>tiff</string>
+        <string>png</string>
+        <string>webp</string>
+        <string>gif</string>
+      </array>
+      <key>CFBundleTypeMIMETypes</key>
+      <array>
+        <string>image/jpeg</string>
+        <string>image/tiff</string>
+        <string>image/png</string>
+        <string>image/webp</string>
+        <string>image/gif</string>
+      </array>
+    </dict>
+  </array>
+
+  <!-- Tillåt att ta emot flera filer på en gång -->
+  <key>NSSupportsOpeningDocumentsInPlace</key>
+  <false/>
+
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+
+  <!-- Kör utan synlig UI -->
+  <key>LSUIElement</key>
+  <true/>
+
+  <!-- Tillåt nätverksåtkomst (för curl) -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+  </dict>
+</dict>
+</plist>

@@ -1,0 +1,15 @@
+{
+  "_comment": "Kopiera den här filen till ~/.c1s3upload.json och fyll i dina uppgifter",
+
+  "access_key":  "DIN_ACCESS_KEY",
+  "secret_key":  "DIN_SECRET_KEY",
+
+  "bucket":      "ditt-bucket-namn",
+  "region":      "auto",
+  "endpoint":    "https://DITT_ACCOUNT_ID.r2.cloudflarestorage.com",
+
+  "prefix":      "galleri/projekt-namn/",
+
+  "thumbs":      true,
+  "thumb_size":  800
+}

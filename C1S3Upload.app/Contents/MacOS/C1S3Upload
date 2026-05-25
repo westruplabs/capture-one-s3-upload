@@ -1,0 +1,228 @@
+#!/bin/bash
+# ============================================================
+# C1S3Upload — Capture One → S3 / Cloudflare R2 uploader
+# Version 1.1.0
+# https://github.com/westruplabs/capture-one-s3-upload
+# ============================================================
+#
+# Läs config från ~/.c1s3upload.json och ladda upp alla
+# filer som Capture One skickar som argument.
+# Skapar thumbnail (sips) och meta.json om konfigurerat.
+#
+# Logg: ~/Library/Logs/C1S3Upload.log
+# ============================================================
+
+set -euo pipefail
+
+LOG="$HOME/Library/Logs/C1S3Upload.log"
+CONFIG="$HOME/.c1s3upload.json"
+
+# ── Logghjälpare ──────────────────────────────────────────
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
+}
+
+# ── Kontrollera att config finns ──────────────────────────
+if [ ! -f "$CONFIG" ]; then
+  log "FEL: Konfigurationsfilen $CONFIG saknas."
+  log "Kopiera config-template.json till $CONFIG och fyll i dina uppgifter."
+  osascript -e 'display notification "Konfigurationsfilen ~/.c1s3upload.json saknas. Se loggen." with title "C1S3Upload" subtitle "Fel"' 2>/dev/null || true
+  exit 1
+fi
+
+# ── Läs config via Python3 (inbyggt i macOS) ──────────────
+_cfg() {
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open('$CONFIG'))
+    v = d.get('$1', '$2')
+    print(str(v).strip())
+except Exception as e:
+    print('$2')
+"
+}
+
+ACCESS_KEY=$(_cfg access_key "")
+SECRET_KEY=$(_cfg secret_key "")
+BUCKET=$(_cfg bucket "")
+REGION=$(_cfg region "auto")
+ENDPOINT=$(_cfg endpoint "")
+PREFIX=$(_cfg prefix "")
+THUMB_SIZE=$(_cfg thumb_size "800")
+THUMBS=$(_cfg thumbs "true")
+
+# ── Validera obligatoriska fält ───────────────────────────
+if [ -z "$ACCESS_KEY" ] || [ -z "$SECRET_KEY" ] || [ -z "$BUCKET" ] || [ -z "$ENDPOINT" ]; then
+  log "FEL: access_key, secret_key, bucket och endpoint måste vara ifyllda i $CONFIG"
+  osascript -e 'display notification "Konfigurationsfel — kontrollera ~/.c1s3upload.json" with title "C1S3Upload" subtitle "Fel"' 2>/dev/null || true
+  exit 1
+fi
+
+# Normalisera endpoint: ta bort trailing slash
+ENDPOINT="${ENDPOINT%/}"
+
+# ── Dialog: fråga om titel och klient ────────────────────
+TITLE=$(osascript <<'APPLESCRIPT'
+set dlg to display dialog "Galleriets titel:" default answer "" with title "C1S3Upload" buttons {"Avbryt", "Nästa"} default button "Nästa"
+if button returned of dlg is "Avbryt" then error number -128
+return text returned of dlg
+APPLESCRIPT
+) || { log "Uppladdning avbruten av användaren."; exit 0; }
+
+CLIENT=$(osascript <<'APPLESCRIPT'
+set dlg to display dialog "Klientens namn:" default answer "" with title "C1S3Upload" buttons {"Avbryt", "Ladda upp"} default button "Ladda upp"
+if button returned of dlg is "Avbryt" then error number -128
+return text returned of dlg
+APPLESCRIPT
+) || { log "Uppladdning avbruten av användaren."; exit 0; }
+
+YEAR=$(date +%Y)
+
+log "Galleri: \"$TITLE\" | Klient: \"$CLIENT\" | År: $YEAR"
+
+# ── Räkna filer att ladda upp ─────────────────────────────
+TOTAL_FILES=$#
+if [ "$TOTAL_FILES" -eq 0 ]; then
+  log "Inga filer skickades till skriptet. Avbryter."
+  exit 0
+fi
+
+log "========================================"
+log "Startar uppladdning av $TOTAL_FILES fil(er)"
+log "Bucket:   $BUCKET"
+log "Prefix:   $PREFIX"
+log "Endpoint: $ENDPOINT"
+log "========================================"
+
+# ── Funktion: bestäm Content-Type ─────────────────────────
+content_type() {
+  local ext="${1##*.}"
+  ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+  case "$ext" in
+    jpg|jpeg) echo "image/jpeg" ;;
+    png)      echo "image/png" ;;
+    tif|tiff) echo "image/tiff" ;;
+    webp)     echo "image/webp" ;;
+    gif)      echo "image/gif" ;;
+    *)        echo "application/octet-stream" ;;
+  esac
+}
+
+# ── Funktion: ladda upp en fil via curl + SigV4 ───────────
+upload_file() {
+  local local_path="$1"
+  local s3_key="$2"
+  local ctype="$3"
+  local url="${ENDPOINT}/${BUCKET}/${s3_key}"
+
+  log "  → Laddar upp: $s3_key"
+
+  local http_code
+  http_code=$(curl -sS -k -o /dev/null -w "%{http_code}" \
+    --aws-sigv4 "aws:amz:${REGION}:s3" \
+    --user "${ACCESS_KEY}:${SECRET_KEY}" \
+    -T "$local_path" \
+    -H "Content-Type: ${ctype}" \
+    "$url")
+
+  if [[ "$http_code" =~ ^2 ]]; then
+    log "     ✓ HTTP $http_code"
+  else
+    log "     ✗ HTTP $http_code — FEL vid uppladdning av $s3_key"
+    return 1
+  fi
+}
+
+# ── Funktion: ladda upp sträng (meta.json) ────────────────
+upload_string() {
+  local content="$1"
+  local s3_key="$2"
+  local ctype="$3"
+  local url="${ENDPOINT}/${BUCKET}/${s3_key}"
+  local tmpfile
+  tmpfile=$(mktemp /tmp/c1s3upload_meta.XXXXXX)
+  echo -n "$content" > "$tmpfile"
+
+  log "  → Laddar upp: $s3_key"
+
+  local http_code
+  http_code=$(curl -sS -k -o /dev/null -w "%{http_code}" \
+    --aws-sigv4 "aws:amz:${REGION}:s3" \
+    --user "${ACCESS_KEY}:${SECRET_KEY}" \
+    -T "$tmpfile" \
+    -H "Content-Type: ${ctype}" \
+    "$url")
+
+  rm -f "$tmpfile"
+
+  if [[ "$http_code" =~ ^2 ]]; then
+    log "     ✓ HTTP $http_code"
+  else
+    log "     ✗ HTTP $http_code — FEL vid uppladdning av $s3_key"
+  fi
+}
+
+# ── Loopa igenom alla filer ───────────────────────────────
+UPLOADED=0
+FAILED=0
+
+for FILE in "$@"; do
+  if [ ! -f "$FILE" ]; then
+    log "VARNING: Filen finns inte: $FILE"
+    ((FAILED++)) || true
+    continue
+  fi
+
+  FILENAME=$(basename "$FILE")
+  KEY="${PREFIX}${FILENAME}"
+  CTYPE=$(content_type "$FILENAME")
+
+  log "Fil: $FILENAME"
+
+  # Ladda upp original
+  if upload_file "$FILE" "$KEY" "$CTYPE"; then
+    ((UPLOADED++)) || true
+  else
+    ((FAILED++)) || true
+    continue
+  fi
+
+  # Thumbnail
+  if [ "$THUMBS" = "true" ]; then
+    THUMB_TMP=$(mktemp /tmp/c1s3upload_thumb_XXXXXX.jpg)
+    if sips -Z "$THUMB_SIZE" "$FILE" --out "$THUMB_TMP" >/dev/null 2>&1; then
+      THUMB_KEY="${PREFIX}thumbnails/${FILENAME}"
+      upload_file "$THUMB_TMP" "$THUMB_KEY" "image/jpeg" || true
+    else
+      log "     VARNING: sips misslyckades för $FILENAME"
+    fi
+    rm -f "$THUMB_TMP"
+  fi
+
+done
+
+# ── meta.json ─────────────────────────────────────────────
+# Escapa JSON-strängar säkert via Python3
+JSON=$(python3 -c "
+import json, sys
+d = {'title': sys.argv[1], 'client': sys.argv[2], 'year': sys.argv[3]}
+print(json.dumps(d, ensure_ascii=False))
+" "$TITLE" "$CLIENT" "$YEAR")
+
+META_KEY="${PREFIX}meta.json"
+upload_string "$JSON" "$META_KEY" "application/json"
+
+# ── Sammanfattning ────────────────────────────────────────
+log "========================================"
+log "Klart! Uppladdade: $UPLOADED  Misslyckades: $FAILED"
+log "========================================"
+
+# macOS-notis
+if [ "$FAILED" -eq 0 ]; then
+  osascript -e "display notification \"Uppladdade $UPLOADED fil(er) till $BUCKET\" with title \"C1S3Upload\" subtitle \"Klart\"" 2>/dev/null || true
+else
+  osascript -e "display notification \"$UPLOADED uppladdade, $FAILED misslyckades. Se loggen.\" with title \"C1S3Upload\" subtitle \"Fel\"" 2>/dev/null || true
+fi
+
+exit 0
