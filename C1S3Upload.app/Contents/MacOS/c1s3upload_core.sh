@@ -86,7 +86,10 @@ content_type() {
 # ── Ladda upp fil ─────────────────────────────────────────
 upload_file() {
   local path="$1" key="$2" ctype="$3"
-  local url="${ENDPOINT}/${BUCKET}/${key}"
+  # URL-enkoda nyckel (hanterar mellanslag och specialtecken)
+  local encoded_key
+  encoded_key=$(/usr/bin/python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1],safe='/'))" "$key")
+  local url="${ENDPOINT}/${BUCKET}/${encoded_key}"
   local code
   code=$(/usr/bin/curl -sS -k -o /dev/null -w "%{http_code}" \
     --aws-sigv4 "aws:amz:${REGION}:s3" \
