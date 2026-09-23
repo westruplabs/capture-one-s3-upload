@@ -161,4 +161,4 @@ tail -f ~/Library/Logs/C1S3Upload.log
 
 MIT — samma som [lightroom-s3-upload](https://github.com/westruplabs/lightroom-s3-upload)
 
-© Peter Westrup / [westruplabs](https://github.com/westruplabs)
+© westruplabs / [westruplabs](https://westruplabs.com)
