@@ -1,7 +1,11 @@
 -- C1S3Upload — Capture One → S3 / Cloudflare R2
 -- Capture One skickar filer en i taget via "Open With".
--- Första filen visar dialogen, resten av filerna i samma
--- session (inom 30 min) laddas upp tyst med samma inställningar.
+-- Första filen i en export visar dialogerna; resten av filerna
+-- laddas upp tyst med samma inställningar.
+--
+-- En export räknas som pågående så länge det kommer en ny fil
+-- inom BATCH_GAP sekunder. Blir det tyst längre än så räknas
+-- nästa fil som en ny export och dialogerna visas igen.
 
 on open theFiles
     set logPath to (POSIX path of (path to home folder)) & "Library/Logs/C1S3Upload.log"
@@ -12,11 +16,12 @@ on open theFiles
     -- Debug: logga antal filer
     do shell script "echo '[" & (do shell script "date '+%Y-%m-%d %H:%M:%S'") & "] on open fick " & fileCount & " fil(er)' >> " & quoted form of logPath
 
-    -- Kolla om det finns en aktiv session (skapad inom 30 min)
+    -- Pågår samma export? Ja om senaste filen kom nyligen.
+    set BATCH_GAP to 90
     set useSession to false
     try
         set sessionAge to do shell script "echo $(( $(date +%s) - $(date -r " & quoted form of sessionFile & " +%s) ))"
-        if (sessionAge as integer) < 1800 then
+        if (sessionAge as integer) < BATCH_GAP then
             set useSession to true
         end if
     end try
@@ -27,11 +32,13 @@ on open theFiles
         set kategori to item 1 of sessionLines
         set galleriNamn to item 2 of sessionLines
         set klientNamn to item 3 of sessionLines
+        -- Förläng sessionen så att långa exporter inte avbryts
+        do shell script "touch " & quoted form of sessionFile
     else
         -- Visa dialoger för ny session
 
         -- Dialog 1: Välj kategori
-        set kategoriVal to choose from list {"commissions", "landscapes", "observations"} with title "C1S3Upload" with prompt "Välj kategori:" default items {"commissions"} without multiple selections allowed and empty selection allowed
+        set kategoriVal to choose from list {"commissions", "architecture", "landscapes", "observations"} with title "C1S3Upload" with prompt "Välj kategori:" default items {"commissions"} without multiple selections allowed and empty selection allowed
         if kategoriVal is false then return
         set kategori to item 1 of kategoriVal
 
