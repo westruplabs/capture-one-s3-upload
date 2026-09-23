@@ -14,7 +14,7 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="/usr/local/bin"
-TOOLS=(edit-order move-folder)
+TOOLS=(edit-order move-folder make-thumbs)
 
 echo "╔══════════════════════════════════════╗"
 echo "║   C1S3Upload — Verktygsgenvägar      ║"
@@ -54,6 +54,7 @@ echo
 echo "  edit-order commissions"
 echo "  edit-order architecture"
 echo "  move-folder commissions/stangby architecture/stangby"
+echo "  make-thumbs architecture"
 echo
 echo "Genvägarna pekar på skripten i mappen ovan, så när jag"
 echo "uppdaterar dem slår ändringarna igenom direkt — du"

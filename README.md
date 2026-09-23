@@ -18,7 +18,7 @@ Capture One → Process Recipe (JPEG/TIFF) → C1S3Upload.app → S3 / R2
 
 När Capture One exporterar bilder visas tre dialogrutor:
 
-1. **Kategori** — välj mellan `commissions`, `landscapes` eller `observations`
+1. **Kategori** — välj mellan `commissions`, `architecture`, `landscapes` eller `observations`
 2. **Gallerinamn** — används som undermapp i bucketen, t.ex. `audi-2026`
 3. **Klientnamn** — sparas i `meta.json`
 
@@ -103,7 +103,7 @@ commissions/audi-2026/
 ├── IMG_1235.jpg
 ├── …
 ├── meta.json
-└── thumbnails/
+└── thumbs/
     ├── IMG_1234.jpg
     └── …
 ```

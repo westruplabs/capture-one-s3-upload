@@ -52,7 +52,8 @@ else
   PREFIX=$(_cfg prefix "")
 fi
 THUMB_SIZE=$(_cfg thumb_size "800")
-THUMBS=$(_cfg thumbs "true")
+# JSON:s true blir "True" via Python — normalisera så jämförelsen håller
+THUMBS=$(_cfg thumbs "true" | tr '[:upper:]' '[:lower:]')
 YEAR=$(date +%Y)
 
 ENDPOINT="${ENDPOINT%/}"
@@ -148,7 +149,7 @@ for FILE in "$@"; do
   if [ "$THUMBS" = "true" ]; then
     THUMB=$(mktemp /tmp/c1s3_thumb_XXXXXX.jpg)
     if /usr/bin/sips -Z "$THUMB_SIZE" "$FILE" --out "$THUMB" >/dev/null 2>&1; then
-      upload_file "$THUMB" "${PREFIX}thumbnails/${FNAME}" "image/jpeg" || true
+      upload_file "$THUMB" "${PREFIX}thumbs/${FNAME}" "image/jpeg" || true
     else
       log "  VARNING: sips misslyckades för $FNAME"
     fi
