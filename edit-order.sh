@@ -64,6 +64,11 @@ ENDPOINT="${ENDPOINT%/}"
 
 SIGV4=(--aws-sigv4 "aws:amz:${REGION}:s3" --user "${ACCESS_KEY}:${SECRET_KEY}")
 
+# Worker:n används för att läsa av den ordning sajten visar just nu.
+# Cloudflare avvisar curls standard-User-Agent, därför den här.
+WORKER_URL="https://peterwestrup-images-api.super-limit-c89e.workers.dev"
+UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
 # Hitta skriptets verkliga plats, även om det anropas via symlänk
 SELF="$0"
 while [ -L "$SELF" ]; do
@@ -94,11 +99,24 @@ CODE=$(/usr/bin/curl -sS -k -o "$TMP" -w "%{http_code}" "${SIGV4[@]}" \
 if [[ "$CODE" =~ ^2 ]]; then
   echo "  ✓ hämtad"
 elif [ "$MODE" = section ]; then
-  # Ingen _order.json än — bygg en av sektionens mappar
-  echo "  (finns inte än — skapar en med nuvarande mappar)"
-  /usr/bin/curl -sS -k "${SIGV4[@]}" \
-    "${ENDPOINT}/${BUCKET}?list-type=2&prefix=$(urlenc "${SECTION}/")&delimiter=/&max-keys=1000" \
-  | /usr/bin/python3 -c "
+  # Ingen _order.json än. Hämta ordningen sajten använder just nu
+  # från worker:n, så att listan öppnas precis som du ser den.
+  echo "  (finns inte än — skapar en med nuvarande ordning)"
+  if ! /usr/bin/curl -sS -f -A "$UA" "${WORKER_URL}/${SECTION}" 2>/dev/null \
+    | /usr/bin/python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+folders = d.get('$SECTION') or d.get('folders') or []
+ids = [f['id'] for f in folders if f.get('id')]
+if not ids:
+    raise SystemExit(1)
+print(json.dumps(ids, indent=2, ensure_ascii=False))
+" > "$TMP" 2>/dev/null; then
+    # Worker:n svarade inte — lista mapparna direkt ur R2 i stället
+    echo "  (worker onåbar, listar mapparna alfabetiskt)"
+    /usr/bin/curl -sS -k "${SIGV4[@]}" \
+      "${ENDPOINT}/${BUCKET}?list-type=2&prefix=$(urlenc "${SECTION}/")&delimiter=/&max-keys=1000" \
+    | /usr/bin/python3 -c "
 import sys, re, json, html
 prefixes = re.findall(r'<Prefix>(.*?)</Prefix>', sys.stdin.read(), re.S)
 ids = []
@@ -108,6 +126,7 @@ for p in prefixes:
         ids.append(name)
 print(json.dumps(sorted(set(ids)), indent=2, ensure_ascii=False))
 " > "$TMP"
+  fi
 else
   # Ingen meta.json än — skapa en tom som fylls på nedan
   echo "  (finns inte än — skapar en)"
