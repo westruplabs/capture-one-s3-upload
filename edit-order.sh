@@ -5,14 +5,12 @@
 #   ./edit-order.sh architecture                  ordning på MAPPARNA
 #   ./edit-order.sh architecture/lundsstadshall   ordning på BILDERNA
 #
-# Utan snedstreck redigeras <sektion>/_order.json, som styr i
-# vilken ordning mapparna visas i sektionen.
+# Du redigerar en vanlig textfil — ett namn per rad, inga
+# citattecken eller kommatecken. Skriptet sköter JSON-biten.
 #
-# Med snedstreck redigeras mappens meta.json, där fältet "order"
-# styr bildernas ordning. Fältet fylls i åt dig med mappens
-# faktiska filnamn, så du bara behöver flytta rader.
-#
-# Filen öppnas i din texteditor och laddas upp när du sparat.
+# Utan snedstreck skrivs <sektion>/_order.json, som styr i vilken
+# ordning mapparna visas. Med snedstreck skrivs mappens meta.json,
+# där "order" styr bildernas ordning.
 # ============================================================
 
 set -euo pipefail
@@ -64,12 +62,16 @@ ENDPOINT="${ENDPOINT%/}"
 
 SIGV4=(--aws-sigv4 "aws:amz:${REGION}:s3" --user "${ACCESS_KEY}:${SECRET_KEY}")
 
-# Worker:n används för att läsa av den ordning sajten visar just nu.
-# Cloudflare avvisar curls standard-User-Agent, därför den här.
+# Worker:n visar vilken ordning sajten använder just nu.
+# Cloudflare avvisar curls standard-User-Agent, därav den här.
 WORKER_URL="https://peterwestrup-images-api.super-limit-c89e.workers.dev"
 UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
-# Hitta skriptets verkliga plats, även om det anropas via symlänk
+urlenc() {
+  /usr/bin/python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1],safe='/'))" "$1"
+}
+
+# Hitta skriptets verkliga plats, även via symlänk
 SELF="$0"
 while [ -L "$SELF" ]; do
   LINK=$(readlink "$SELF")
@@ -80,188 +82,222 @@ while [ -L "$SELF" ]; do
 done
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
-# Filerna sparas lokalt så att de överlever och fungerar som kopia
 WORKDIR="$SCRIPT_DIR/order"
 mkdir -p "$WORKDIR"
 SAFE=$(echo "$TARGET" | tr '/' '_')
-TMP="$WORKDIR/${SAFE}.json"
-ORIG="$WORKDIR/.${SAFE}_original.json"
-
-urlenc() {
-  /usr/bin/python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1],safe='/'))" "$1"
-}
+JSON_IN="$WORKDIR/.${SAFE}_hamtad.json"
+TXT="$WORKDIR/${SAFE}.txt"
+TXT_ORIG="$WORKDIR/.${SAFE}_original.txt"
+JSON_OUT="$WORKDIR/.${SAFE}_klar.json"
 
 # ── Hämta befintlig fil ──────────────────────────────────
 echo "Hämtar $KEY ..."
-CODE=$(/usr/bin/curl -sS -k -o "$TMP" -w "%{http_code}" "${SIGV4[@]}" \
+CODE=$(/usr/bin/curl -sS -k -o "$JSON_IN" -w "%{http_code}" "${SIGV4[@]}" \
   "${ENDPOINT}/${BUCKET}/$(urlenc "$KEY")")
 
 if [[ "$CODE" =~ ^2 ]]; then
   echo "  ✓ hämtad"
-elif [ "$MODE" = section ]; then
-  # Ingen _order.json än. Hämta ordningen sajten använder just nu
-  # från worker:n, så att listan öppnas precis som du ser den.
-  echo "  (finns inte än — skapar en med nuvarande ordning)"
-  if ! /usr/bin/curl -sS -f -A "$UA" "${WORKER_URL}/${SECTION}" 2>/dev/null \
-    | /usr/bin/python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-folders = d.get('$SECTION') or d.get('folders') or []
-ids = [f['id'] for f in folders if f.get('id')]
-if not ids:
-    raise SystemExit(1)
-print(json.dumps(ids, indent=2, ensure_ascii=False))
-" > "$TMP" 2>/dev/null; then
-    # Worker:n svarade inte — lista mapparna direkt ur R2 i stället
-    echo "  (worker onåbar, listar mapparna alfabetiskt)"
-    /usr/bin/curl -sS -k "${SIGV4[@]}" \
-      "${ENDPOINT}/${BUCKET}?list-type=2&prefix=$(urlenc "${SECTION}/")&delimiter=/&max-keys=1000" \
-    | /usr/bin/python3 -c "
-import sys, re, json, html
-prefixes = re.findall(r'<Prefix>(.*?)</Prefix>', sys.stdin.read(), re.S)
-ids = []
-for p in prefixes:
-    name = html.unescape(p).rstrip('/').split('/')[-1]
-    if name and name != '$SECTION' and name != 'thumbs':
-        ids.append(name)
-print(json.dumps(sorted(set(ids)), indent=2, ensure_ascii=False))
-" > "$TMP"
-  fi
 else
-  # Ingen meta.json än — skapa en tom som fylls på nedan
-  echo "  (finns inte än — skapar en)"
-  printf '{}' > "$TMP"
+  echo "  (finns inte än — skapas)"
+  if [ "$MODE" = section ]; then printf '[]' > "$JSON_IN"; else printf '{}' > "$JSON_IN"; fi
 fi
 
-# I mappläge: fyll "order" med mappens faktiska filnamn
-if [ "$MODE" = folder ]; then
-  FILES=$(/usr/bin/curl -sS -k "${SIGV4[@]}" \
+# ── Vad som faktiskt finns i R2 just nu ──────────────────
+if [ "$MODE" = section ]; then
+  CURRENT=$(/usr/bin/curl -sS -f -A "$UA" "${WORKER_URL}/${SECTION}" 2>/dev/null \
+    | /usr/bin/python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for f in (d.get('$SECTION') or d.get('folders') or []):
+        if f.get('id'):
+            print(f['id'])
+except Exception:
+    pass
+" || true)
+
+  if [ -z "$CURRENT" ]; then
+    CURRENT=$(/usr/bin/curl -sS -k "${SIGV4[@]}" \
+        "${ENDPOINT}/${BUCKET}?list-type=2&prefix=$(urlenc "${SECTION}/")&delimiter=/&max-keys=1000" \
+      | /usr/bin/python3 -c "
+import sys, re, html
+names = []
+for p in re.findall(r'<Prefix>(.*?)</Prefix>', sys.stdin.read(), re.S):
+    n = html.unescape(p).rstrip('/').split('/')[-1]
+    if n and n not in ('$SECTION', 'thumbs'):
+        names.append(n)
+for n in sorted(set(names)):
+    print(n)
+")
+  fi
+else
+  CURRENT=$(/usr/bin/curl -sS -k "${SIGV4[@]}" \
       "${ENDPOINT}/${BUCKET}?list-type=2&prefix=$(urlenc "${SECTION}/${FOLDER}/")&max-keys=1000" \
     | /usr/bin/python3 -c "
 import sys, re, html
-for k in re.findall(r'<Key>(.*?)</Key>', sys.stdin.read(), re.S):
-    print(html.unescape(k))
-")
-  if [ -z "$FILES" ]; then
-    echo "FEL: hittade inga filer under ${SECTION}/${FOLDER}/"
-    exit 1
-  fi
-
-  printf '%s' "$FILES" | /usr/bin/python3 -c "
-import sys, json, re, os
-
-meta_path = '$TMP'
 prefix = '${SECTION}/${FOLDER}/'
-
-keys = [l.strip() for l in sys.stdin if l.strip()]
-names = []
-for k in keys:
+for k in re.findall(r'<Key>(.*?)</Key>', sys.stdin.read(), re.S):
+    k = html.unescape(k)
     rest = k[len(prefix):] if k.startswith(prefix) else k
-    if '/' in rest:                       # thumbs/ och liknande
+    if '/' in rest:
         continue
     if not re.search(r'\.(jpe?g|png|tiff?|webp)\$', rest, re.I):
         continue
-    if rest.lower().startswith('cover.'):  # cover ligger alltid först
+    if rest.lower().startswith('cover.'):
         continue
-    names.append(rest)
-
-try:
-    meta = json.load(open(meta_path))
-    if not isinstance(meta, dict):
-        meta = {}
-except Exception:
-    meta = {}
-
-meta.setdefault('title', '${FOLDER}')
-meta.setdefault('client', '')
-meta.setdefault('year', '')
-
-# Behåll den ordning som redan står, lägg nya filer sist
-old = [n for n in meta.get('order', []) if n in names]
-meta['order'] = old + [n for n in sorted(names) if n not in old]
-
-order = meta.pop('order')
-out = dict(meta)
-out['order'] = order
-json.dump(out, open(meta_path, 'w'), indent=2, ensure_ascii=False)
-"
+    print(rest)
+")
+  if [ -z "$CURRENT" ]; then
+    echo "FEL: hittade inga bilder under ${SECTION}/${FOLDER}/"
+    exit 1
+  fi
 fi
 
-cp "$TMP" "$ORIG"
+# ── Bygg textfilen du redigerar ──────────────────────────
+printf '%s\n' "$CURRENT" | /usr/bin/python3 -c "
+import sys, json
 
-# ── Öppna i editor ───────────────────────────────────────
+mode   = '$MODE'
+target = '$TARGET'
+folder = '''$FOLDER'''
+names  = [l.strip() for l in sys.stdin if l.strip()]
+
+try:
+    data = json.load(open('$JSON_IN'))
+except Exception:
+    data = [] if mode == 'section' else {}
+
+if mode == 'section':
+    saved = data if isinstance(data, list) else []
+else:
+    saved = data.get('order', []) if isinstance(data, dict) else []
+    if not isinstance(saved, list):
+        saved = []
+
+# Behåll sparad ordning, lägg tillkomna namn sist
+ordered  = [n for n in saved if n in names]
+ordered += [n for n in names if n not in ordered]
+
+lines = []
+if mode == 'section':
+    lines += [
+        '# Ordningen på mapparna i ' + target + '.',
+        '# Översta raden visas först. Flytta raderna som du vill.',
+        '# Rader som börjar med # struntar skriptet i.',
+        '',
+    ]
+else:
+    meta = data if isinstance(data, dict) else {}
+    lines += [
+        '# Bildordning i ' + target + '.',
+        '# Översta raden visas först. cover.jpg ligger alltid före dessa.',
+        '# Raderna med kolon är projektets uppgifter — ändra fritt.',
+        '',
+        'titel: '  + (meta.get('title')  or folder),
+        'klient: ' + (meta.get('client') or ''),
+        'år: '     + (meta.get('year')   or ''),
+        '',
+    ]
+lines += ordered
+open('$TXT', 'w').write('\n'.join(lines) + '\n')
+"
+
+cp "$TXT" "$TXT_ORIG"
+
+# ── Visa och öppna ───────────────────────────────────────
 echo
 echo "Nuvarande $LABEL:"
 /usr/bin/python3 -c "
-import json
-try:
-    d = json.load(open('$TMP'))
-    items = d['order'] if isinstance(d, dict) else d
-    for i, name in enumerate(items, 1):
-        print(f'  {i}. {name}')
-except Exception as e:
-    print('  (kunde inte läsas:', e, ')')
+import re
+n = 0
+for line in open('$TXT'):
+    line = line.strip()
+    if not line or line.startswith('#'):
+        continue
+    if re.match(r'^(titel|klient|år|ar|title|client|year)\s*:', line, re.I):
+        continue
+    n += 1
+    print('  %d. %s' % (n, line))
 "
 echo
-if [ "$MODE" = section ]; then
-  echo "Lägg mapparna i den ordning du vill ha dem på sidan."
-else
-  echo "Flytta raderna i \"order\" till den ordning du vill ha bilderna."
-  echo "Titel, klient och år kan du också ändra här."
-fi
+echo "Flytta raderna till den ordning du vill ha."
+echo "Inga citattecken eller kommatecken behövs."
 echo
 
 if [ -n "${EDITOR:-}" ]; then
-  # En terminaleditor blockerar tills du stänger den
-  "$EDITOR" "$TMP"
+  "$EDITOR" "$TXT"
 else
-  open -e "$TMP"
+  open -e "$TXT"
   echo "Filen är öppnad i TextEdit."
   echo
   read -r -p "Spara (⌘S), kom tillbaka hit och tryck Enter... " _
 fi
 
-# ── Kontrollera att det är giltig JSON ───────────────────
-if ! /usr/bin/python3 -c "
-import json
-d = json.load(open('$TMP'))
-if '$MODE' == 'section':
-    assert isinstance(d, list), 'filen ska innehålla en lista'
-    print('  ✓ giltig JSON,', len(d), 'mappar')
-else:
-    assert isinstance(d, dict), 'filen ska innehålla ett objekt'
-    o = d.get('order', [])
-    assert isinstance(o, list), '\"order\" ska vara en lista'
-    print('  ✓ giltig JSON,', len(o), 'bilder')
-"; then
-  echo
-  echo "FEL: filen är inte giltig JSON — inget laddas upp."
-  if [ "$MODE" = section ]; then
-    echo 'Den ska se ut så här:  ["mapp-ett", "mapp-tva"]'
-  else
-    echo 'Den ska se ut så här:  { "title": "...", "order": ["bild1.jpg"] }'
-  fi
-  exit 1
-fi
-
-if cmp -s "$TMP" "$ORIG"; then
+if cmp -s "$TXT" "$TXT_ORIG"; then
   echo
   echo "Inga ändringar hittades — inget laddas upp."
   echo "(Glömde du spara med ⌘S innan du tryckte Enter?)"
   exit 0
 fi
 
+# ── Textfil tillbaka till JSON ───────────────────────────
+if ! /usr/bin/python3 -c "
+import json, sys, re
+
+mode  = '$MODE'
+meta  = {}
+order = []
+
+for raw in open('$TXT'):
+    line = raw.strip()
+    if not line or line.startswith('#'):
+        continue
+    m = re.match(r'^(titel|klient|år|ar|title|client|year)\s*:(.*)\$', line, re.I)
+    if mode == 'folder' and m:
+        k = m.group(1).lower()
+        v = m.group(2).strip()
+        if   k in ('titel', 'title'):   meta['title']  = v
+        elif k in ('klient', 'client'): meta['client'] = v
+        else:                           meta['year']   = v
+        continue
+    order.append(line)
+
+if not order:
+    print('  Listan är tom — inget att spara.', file=sys.stderr)
+    raise SystemExit(1)
+
+dupes = sorted({n for n in order if order.count(n) > 1})
+if dupes:
+    print('  Samma namn förekommer flera gånger: ' + ', '.join(dupes), file=sys.stderr)
+    raise SystemExit(1)
+
+if mode == 'section':
+    out = order
+    print('  ✓ %d mappar' % len(order))
+else:
+    out = {
+        'title':  meta.get('title', ''),
+        'client': meta.get('client', ''),
+        'year':   meta.get('year', ''),
+        'order':  order,
+    }
+    print('  ✓ %d bilder' % len(order))
+
+json.dump(out, open('$JSON_OUT', 'w'), indent=2, ensure_ascii=False)
+"; then
+  echo
+  echo "FEL: inget laddas upp. Rätta filen och kör om."
+  exit 1
+fi
+
 echo
 echo "Ny ordning:"
 /usr/bin/python3 -c "
 import json
-try:
-    d = json.load(open('$TMP'))
-    items = d['order'] if isinstance(d, dict) else d
-    for i, name in enumerate(items, 1):
-        print(f'  {i}. {name}')
-except Exception as e:
-    print('  (kunde inte läsas:', e, ')')
+d = json.load(open('$JSON_OUT'))
+items = d if isinstance(d, list) else d['order']
+for i, name in enumerate(items, 1):
+    print('  %d. %s' % (i, name))
 "
 
 # ── Ladda upp ────────────────────────────────────────────
@@ -269,14 +305,14 @@ echo
 echo "Laddar upp $KEY ..."
 CODE=$(/usr/bin/curl -sS -k -o /dev/null -w "%{http_code}" -X PUT "${SIGV4[@]}" \
   -H "Content-Type: application/json" \
-  -T "$TMP" \
+  -T "$JSON_OUT" \
   "${ENDPOINT}/${BUCKET}/$(urlenc "$KEY")")
 
 if [[ "$CODE" =~ ^2 ]]; then
   echo "  ✓ uppladdad (HTTP $CODE)"
   echo
   echo "Ordningen slår igenom inom några minuter."
-  echo "Ladda om sidan med ⌘+Shift+R för att se den direkt."
+  echo "Ladda om sidan med ⌘⇧R för att se den direkt."
 else
   echo "  ✗ misslyckades (HTTP $CODE)"
   exit 1
